@@ -121,10 +121,24 @@ def calculate_metrics(df, discount_rate):
              val += p_inc - p_exp
         return val
 
-    try:
-        irr = newton(solver, discount_rate) * 100
-    except:
-        irr = None
+    # Try to find root with multiple starts
+    irr = None
+    for start in [discount_rate, 0.1, 0.5, 0.01]:
+        try:
+            res = newton(solver, start, maxiter=100)
+            if -1 < res < 10: # Rational IRR range
+                irr = res * 100
+                break
+        except:
+            continue
+    
+    if irr is None:
+        # Fallback to search-based simple solver if Newton fails
+        try:
+            from scipy.optimize import brentq
+            irr = brentq(solver, -0.9, 1.0) * 100
+        except:
+            pass
 
     return {
         'NPV': npv, 'PI': pi, 'PP': pp, 'DPP': dpp, 'IRR': irr,
@@ -356,33 +370,43 @@ with st.container(border=True):
                st.markdown("Из-за обесценивания денег (дисконта) проект не успевает вернуть вложения.")
 
 # 4. IRR
-irr_an = f"IRR = {fmt % m2['IRR']}%." if m2['IRR'] else "—"
-if m2['IRR'] and m2['IRR'] > rate_pc:
-    irr_an += f"""<br><br>
-    <b>Проект надежен.</b><br>
-    Максимальная ставка кредита или инфляции, которую выдержит проект — <b>{fmt % m2['IRR']}%</b>.
-    Это выше вашей текущей ставки ({rate_pc}%), так что запас прочности есть.
-    """
-    st_irr = "success"
-else:
-    irr_an += f"""<br><br>
-    <b>Слишком рискованно.</b><br>
-    Проект приносит доходность всего {fmt % m2['IRR']}%, а вы требуете {rate_pc}%. 
-    Лучше положить деньги в банк или найти другой проект.
-    """
-    st_irr = "error"
-
 ir_cols = st.columns(2)
 d1 = int(m2['IRR'] // 1) if m2['IRR'] else 10
-r1_int = ir_cols[0].number_input("r1 (целое)", value=d1, step=1, format="%d")
-r2_int = ir_cols[1].number_input("r2 (целое)", value=d1+5, step=1, format="%d")
+r1_int = ir_cols[0].number_input("r(+) %", value=d1, step=1, format="%d")
+r2_int = ir_cols[1].number_input("r(-) %", value=d1+5, step=1, format="%d")
 
 r1_dec, r2_dec = r1_int/100, r2_int/100
 n1 = calc_npv_manual_viz(r1_dec, ed_df, m2['Is_Dist'])
 n2 = calc_npv_manual_viz(r2_dec, ed_df, m2['Is_Dist'])
 
 irr_vis_1 = r"IRR \approx r_{(+)} + \frac{NPV_{(+)}}{NPV_{(+)} - NPV_{(-)}} \cdot (r_{(-)} - r_{(+)})"
-irr_vis_2 = f"IRR \\approx {r1_dec} + \\frac{{{fmt % n1}}}{{{fmt % n1} - ({fmt % n2})}} \\cdot ({r2_dec} - {r1_dec})"
+if (n1 - n2) != 0:
+    approx_dec = r1_dec + (n1 / (n1 - n2)) * (r2_dec - r1_dec)
+    approx_pc = approx_dec * 100
+    irr_vis_2 = f"IRR \\approx {r1_dec} + \\frac{{{fmt % n1}}}{{{fmt % n1} - ({fmt % n2})}} \\cdot ({r2_dec} - {r1_dec}) = {fmt % approx_pc}\\%"
+else:
+    approx_pc = float(r1_int)
+    irr_vis_2 = f"IRR \\approx {fmt % r1_int}% (ошибка деления на 0)"
 
-conclusion_box("🚀 IRR", f"{fmt % m2['IRR']}%" if m2['IRR'] else "—", irr_an, 
+if approx_pc > rate_pc:
+    irr_an = f"""
+    <b>Проект финансово устойчив.</b><br>
+    Внутренняя норма доходности ({fmt % approx_pc}%) превышает барьерную ставку ({rate_pc}%).
+    Запас прочности проекта составляет <b>{fmt % (approx_pc - rate_pc)} процентных пунктов</b>.
+    Это означает, что даже при удорожании капитала до уровня IRR проект останется безубыточным.
+    """
+    st_irr = "success"
+else:
+    irr_an = f"""
+    <b>Высокий риск.</b><br>
+    Доходность проекта ({fmt % approx_pc}%) ниже альтернативной доходности или стоимости капитала ({rate_pc}%).
+    Инвестирование не создаст требуемой отдачи.
+    """
+    st_irr = "error"
+
+# Reference to EXACT value
+if m2['IRR']:
+    irr_an += f"<br><br><i>Контроль (точный расчет): {fmt % m2['IRR']}%</i>"
+
+conclusion_box("🚀 IRR", f"{fmt % approx_pc}%", irr_an, 
                [{'type':'latex', 'content': irr_vis_1}, {'type':'latex', 'content': irr_vis_2}], st_irr)
